@@ -165,12 +165,73 @@ class MultiScaleRetention(nn.Module):
         output = output.transpose(2, 3)
         return output
     
+    def agent_recurrent_forward(
+        self,
+        qr, kr, v,
+        inner_mask,
+        agent_recurrent_state,
+    ):
+        mask, cross_decay, query_inner_decay, value_inner_decay = inner_mask
+        bsz, tgt_len, embed_dim = v.size()
+        chunk_len = mask.size(1)
+        num_chunks = tgt_len // chunk_len
+
+        assert tgt_len % chunk_len == 0
+
+        qr = qr.view(bsz, self.num_heads, num_chunks, chunk_len, self.key_dim).transpose(1, 2)
+        kr = kr.view(bsz, self.num_heads, num_chunks, chunk_len, self.key_dim).transpose(1, 2)
+        v = v.view(bsz, num_chunks, chunk_len, self.num_heads, self.head_dim).transpose(2, 3)
+
+        kr_t = kr.transpose(-1, -2)
+
+        qk_mat = qr @ kr_t # bsz * num_heads * chunk_len * chunk_len
+        qk_mat = qk_mat * mask
+        # inner_scale = qk_mat.detach().abs().sum(dim=-1, keepdim=True).clamp(min=1)
+        qk_mat = qk_mat #/ inner_scale
+        inner_output = torch.matmul(qk_mat, v) # bsz * num_heads * num_value_heads * chunk_len * head_dim
+        
+        # reduce kv in one chunk
+        kv = kr_t @ (v * value_inner_decay)
+
+        kv_recurrent = []
+        # cross_scale = []
+        if "kv_state" not in agent_recurrent_state:
+            kv_state = torch.zeros(bsz, self.num_heads, self.key_dim, self.head_dim).to(v)
+        else:
+            kv_state = agent_recurrent_state["kv_state"]
+
+        
+        # accumulate kv by loop
+        for i in range(num_chunks):
+            kv_recurrent.append(kv_state)
+            # cross_scale.append(kv_scale)
+            kv_state = kv_state * cross_decay + kv[:, i]
+            # kv_scale = kv_state.detach().abs().sum(dim=-2, keepdim=True).max(dim=-1, keepdim=True).values.clamp(min=1)
+            
+        # agent_recurrent_state["kv_state"] = kv_state
+        
+        kv_recurrent = torch.stack(kv_recurrent, dim=1)
+        # cross_scale = torch.stack(cross_scale, dim=1)
+
+        agent_recurrent_state["kv_state"] = kv_state
+        # all_scale = torch.maximum(inner_scale, cross_scale)
+        # align_inner_scale = all_scale / inner_scale
+        # align_cross_scale = all_scale / cross_scale
+
+        cross_output = (qr * query_inner_decay) @ kv_recurrent
+        output = inner_output + cross_output
+        # output = inner_output / cross_scale + cross_output / inner_scale
+
+        output = output.transpose(2, 3)
+        return output
+    
     def forward(
         self,
         x,
         rel_pos,
         chunkwise_recurrent=False,
-        incremental_state=None
+        incremental_state=None,
+        agent_recurrent_state=None
     ):
         bsz, tgt_len, _ = x.size()
         (sin, cos), inner_mask = rel_pos
@@ -191,6 +252,8 @@ class MultiScaleRetention(nn.Module):
             output = self.recurrent_forward(qr, kr, v, inner_mask, incremental_state)
         elif chunkwise_recurrent:
             output = self.chunk_recurrent_forward(qr, kr, v, inner_mask)
+        elif agent_recurrent_state is not None:
+            output = self.agent_recurrent_forward(qr, kr, v, inner_mask, agent_recurrent_state)
         else:
             output = self.parallel_forward(qr, kr, v, inner_mask)
         

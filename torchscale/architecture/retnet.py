@@ -28,12 +28,14 @@ class RetNetRelPos(nn.Module):
         self.register_buffer("angle", angle)
         self.register_buffer("decay", decay)
         self.recurrent_chunk_size = args.recurrent_chunk_size
+        self.inference_chunk_size = args.inference_chunk_size
         
-    def forward(self, slen, activate_recurrent=False, chunkwise_recurrent=False):
+    def forward(self, slen, activate_recurrent=False, chunkwise_recurrent=False, agent_recurrent=False):
         if activate_recurrent:
             sin = torch.sin(self.angle * (slen - 1))
             cos = torch.cos(self.angle * (slen - 1))
             retention_rel_pos = ((sin, cos), self.decay.exp())
+            
         elif chunkwise_recurrent:
             index = torch.arange(slen).to(self.decay)
             sin = torch.sin(index[:, None] * self.angle[None, :])
@@ -55,6 +57,31 @@ class RetNetRelPos(nn.Module):
             query_inner_decay = query_inner_decay[:, :, None] #/ (scale / mask[:, -1].sum(dim=-1)[:, None, None])
             cross_decay = cross_decay[:, None, None]
             retention_rel_pos = ((sin, cos), (inner_mask, cross_decay, query_inner_decay, value_inner_decay))
+
+        elif agent_recurrent:
+            min, max = slen
+            index = torch.arange(min, max).to(self.decay) 
+
+            sin = torch.sin(index[:, None] * self.angle[None, :])
+            cos = torch.cos(index[:, None] * self.angle[None, :])
+
+            block_index = torch.arange(self.inference_chunk_size).to(self.decay)
+            mask = torch.tril(torch.ones(self.inference_chunk_size, self.inference_chunk_size).to(self.decay))
+            mask = torch.masked_fill(block_index[:, None] - block_index[None, :], ~mask.bool(), float("inf"))
+            mask = torch.exp(mask * self.decay[:, None, None])
+            mask = torch.nan_to_num(mask)
+
+            value_inner_decay = mask[:, -1] #/ mask[:, -1].sum(dim=-1, keepdim=True)
+            value_inner_decay = value_inner_decay.unsqueeze(-1)
+            # scale = mask.sum(dim=-1, keepdim=True).sqrt()
+            inner_mask = mask #/ scale
+
+            cross_decay = torch.exp(self.decay * self.inference_chunk_size)
+            query_inner_decay = torch.exp(self.decay[:, None] * (block_index + 1))
+            query_inner_decay = query_inner_decay[:, :, None] #/ (scale / mask[:, -1].sum(dim=-1)[:, None, None])
+            cross_decay = cross_decay[:, None, None]
+            retention_rel_pos = ((sin, cos), (inner_mask, cross_decay, query_inner_decay, value_inner_decay))
+
         else:
             index = torch.arange(slen).to(self.decay)
             sin = torch.sin(index[:, None] * self.angle[None, :])
