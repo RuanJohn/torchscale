@@ -81,7 +81,7 @@ class MultiScaleRetention(nn.Module):
         qk_mat = qr @ kr.transpose(-1, -2) # bsz * m * tgt_len * tgt_len
         qk_mat = qk_mat * mask
         # invariant after normalization
-        qk_mat = qk_mat / qk_mat.detach().abs().sum(dim=-1, keepdim=True).clamp(min=1, max=5e4)
+        qk_mat = qk_mat #/ qk_mat.detach().abs().sum(dim=-1, keepdim=True).clamp(min=1, max=5e4)
         output = torch.matmul(qk_mat, vr)
         output = output.transpose(1, 2)
         return output
@@ -98,15 +98,16 @@ class MultiScaleRetention(nn.Module):
         kv = kr * v
         if "prev_key_value" in incremental_state:
             prev_kv = incremental_state["prev_key_value"]
-            prev_scale = incremental_state["scale"]
-            scale = prev_scale * decay + 1
-            kv = prev_kv * (prev_scale.sqrt() * decay / scale.sqrt()).view(self.num_heads, 1, 1) + kv / scale.sqrt().view(self.num_heads, 1, 1)
+            # prev_scale = incremental_state["scale"]
+            # scale = prev_scale * decay + 1
+            # kv = prev_kv * (prev_scale.sqrt() * decay / scale.sqrt()).view(self.num_heads, 1, 1) + kv / scale.sqrt().view(self.num_heads, 1, 1)
             # kv = prev_kv * decay.view(self.num_heads, 1, 1) + kv
-        else:
-            scale = torch.ones_like(decay)
+            kv = prev_kv * decay.view(self.num_heads, 1, 1) + kv
+        # else:
+        #     scale = torch.ones_like(decay)
 
         incremental_state["prev_key_value"] = kv
-        incremental_state["scale"] = scale
+        # incremental_state["scale"] = scale
 
         output = torch.sum(qr * kv, dim=3)
         return output
@@ -131,34 +132,34 @@ class MultiScaleRetention(nn.Module):
 
         qk_mat = qr @ kr_t # bsz * num_heads * chunk_len * chunk_len
         qk_mat = qk_mat * mask
-        inner_scale = qk_mat.detach().abs().sum(dim=-1, keepdim=True).clamp(min=1)
-        qk_mat = qk_mat / inner_scale
+        # inner_scale = qk_mat.detach().abs().sum(dim=-1, keepdim=True).clamp(min=1)
+        qk_mat = qk_mat #/ inner_scale
         inner_output = torch.matmul(qk_mat, v) # bsz * num_heads * num_value_heads * chunk_len * head_dim
         
         # reduce kv in one chunk
         kv = kr_t @ (v * value_inner_decay)
 
         kv_recurrent = []
-        cross_scale = []
+        # cross_scale = []
         kv_state = torch.zeros(bsz, self.num_heads, self.key_dim, self.head_dim).to(v)
-        kv_scale = torch.ones(bsz, self.num_heads, 1, 1).to(v)
+        # kv_scale = torch.ones(bsz, self.num_heads, 1, 1).to(v)
         
         # accumulate kv by loop
         for i in range(num_chunks):
-            kv_recurrent.append(kv_state / kv_scale)
-            cross_scale.append(kv_scale)
+            kv_recurrent.append(kv_state)
+            # cross_scale.append(kv_scale)
             kv_state = kv_state * cross_decay + kv[:, i]
-            kv_scale = kv_state.detach().abs().sum(dim=-2, keepdim=True).max(dim=-1, keepdim=True).values.clamp(min=1)
+            # kv_scale = kv_state.detach().abs().sum(dim=-2, keepdim=True).max(dim=-1, keepdim=True).values.clamp(min=1)
             
         kv_recurrent = torch.stack(kv_recurrent, dim=1)
-        cross_scale = torch.stack(cross_scale, dim=1)
+        # cross_scale = torch.stack(cross_scale, dim=1)
         
-        all_scale = torch.maximum(inner_scale, cross_scale)
-        align_inner_scale = all_scale / inner_scale
-        align_cross_scale = all_scale / cross_scale
+        # all_scale = torch.maximum(inner_scale, cross_scale)
+        # align_inner_scale = all_scale / inner_scale
+        # align_cross_scale = all_scale / cross_scale
 
         cross_output = (qr * query_inner_decay) @ kv_recurrent
-        output = inner_output / align_inner_scale + cross_output / align_cross_scale
+        output = inner_output + cross_output
         # output = inner_output / cross_scale + cross_output / inner_scale
 
         output = output.transpose(2, 3)
