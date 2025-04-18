@@ -4,14 +4,14 @@ from torchscale.component.multiscale_retention import MultiScaleRetention, theta
 from torchscale.architecture.retnet import RetNetRelPos
 
 # Use the same chunk size for agent/inference as for chunkwise recurrent
-RECURRENT_CHUNK_SIZE = 512
+RECURRENT_CHUNK_SIZE = 32
 NUM_AGENTS = 4
 
 # Configuration
 args = argparse.Namespace()
 args.decoder_embed_dim = 64
-args.decoder_value_embed_dim = 128
-args.decoder_retention_heads = 4
+args.decoder_value_embed_dim = 64
+args.decoder_retention_heads = 2
 args.decoder_ffn_embed_dim = 128
 args.activation_fn = 'swish'
 args.dropout = 0.0
@@ -32,9 +32,9 @@ args.recurrent_chunk_size = RECURRENT_CHUNK_SIZE
 args.moe_freq = 0
 args.inference_chunk_size = NUM_AGENTS # Match inference chunk size to NUM_AGENTS
 
-batch_size = 16
+batch_size = 1
 # Ensure seq_len is divisible by the chunk size
-seq_len = 4096 #(4096 // RECURRENT_CHUNK_SIZE) * RECURRENT_CHUNK_SIZE
+seq_len = 32 #(4096 // RECURRENT_CHUNK_SIZE) * RECURRENT_CHUNK_SIZE
 embed_dim = args.decoder_embed_dim
 num_heads = args.decoder_retention_heads
 head_dim = args.decoder_value_embed_dim // num_heads
@@ -93,6 +93,7 @@ print("\nChunkwise Output Shape:", chunkwise_output.shape)
 print("Parallel Output Shape:", parallel_output.shape)
 print("Recurrent Output Shape:", recurrent_output.shape)
 print("Agent Recurrent Output Shape:", agent_recurrent_output.shape)
+
 max_diff_chunk_par = torch.max(torch.abs(chunkwise_output - parallel_output))
 mean_diff_chunk_par = torch.mean(torch.abs(chunkwise_output - parallel_output))
 print(f"\nChunkwise vs Parallel  | Max abs diff: {max_diff_chunk_par:.6f}, Mean abs diff: {mean_diff_chunk_par:.6f}")
@@ -104,6 +105,14 @@ print(f"\nAgent Recurrent vs Chunkwise  | Max abs diff: {max_diff_agent_recurren
 max_diff_recurrent_chunkwise = torch.max(torch.abs(recurrent_output - chunkwise_output))
 mean_diff_recurrent_chunkwise = torch.mean(torch.abs(recurrent_output - chunkwise_output))
 print(f"\nRecurrent vs Chunkwise  | Max abs diff: {max_diff_recurrent_chunkwise:.6f}, Mean abs diff: {mean_diff_recurrent_chunkwise:.6f}")
+
+max_diff_agent_recurrent_parallel = torch.max(torch.abs(agent_recurrent_output - parallel_output))
+mean_diff_agent_recurrent_parallel = torch.mean(torch.abs(agent_recurrent_output - parallel_output))
+print(f"\nAgent Recurrent vs Parallel  | Max abs diff: {max_diff_agent_recurrent_parallel:.6f}, Mean abs diff: {mean_diff_agent_recurrent_parallel:.6f}")
+
+max_diff_recurrent_parallel = torch.max(torch.abs(recurrent_output - parallel_output))
+mean_diff_recurrent_parallel = torch.mean(torch.abs(recurrent_output - parallel_output))
+print(f"\nRecurrent vs Parallel  | Max abs diff: {max_diff_recurrent_parallel:.6f}, Mean abs diff: {mean_diff_recurrent_parallel:.6f}")
 
 # Assert agent recurrent and chunkwise are close
 assert torch.allclose(agent_recurrent_output, chunkwise_output, atol=1e-4, rtol=1e-3), "Agent Recurrent and Chunkwise outputs differ significantly"
